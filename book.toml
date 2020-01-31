@@ -1,0 +1,6 @@
+[book]
+authors = ["k-nasa"]
+language = "ja"
+multilingual = false
+src = "src"
+title = "Rustで学ぶ非同期処理ランタイム"
