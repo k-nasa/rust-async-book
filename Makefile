@@ -1,0 +1,2 @@
+fmt:
+	prettier --write **/*.md
