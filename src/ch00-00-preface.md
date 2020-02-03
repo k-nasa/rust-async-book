@@ -61,7 +61,7 @@
 
 その場合は、次の GitHub リポジトリに issue を立てていただくか Twitter までご連絡下さい。
 
-GitHub リンク: **未定**
+GitHub リンク: https://github.com/k-nasa/rust-async-book
 
 Twitter id: @nasa_desu
 
