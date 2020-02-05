@@ -24,7 +24,7 @@ println!("このコードが実行されるまで1秒ブロックされる")
 
 非同期処理はコードを順番に処理していくという部分は変わらないのですが、一つの処理が終わるのを待たずに次の処理を実行します。
 
-Rust の`async/awat`を用いて非同期関数の例を示します。３つの非同期関数を考えてみましょう。関数のシグネチャから、歌を歌うためには前もって歌を学ぶ必要があります。ですが、歌を学んだ後に歌うのと同時に踊ることは可能ですよね？
+Rust の`async/awat`を用いて非同期関数の例を示します。３つの非同期関数を考えてみましょう。関数のシグネチャから、「歌を歌う(sing_song 関数)」ためには前もって「歌を学ぶ(lern_song 関数」必要があります。
 
 ```rust
 async fn lern_song() -> Song { // do something  }
@@ -32,7 +32,7 @@ async fn sing_song(song: Song) -> Song { // do something  }
 async fn lern_song() { // do something  }
 ```
 
-歌の学習、歌うこと、ダンスを行う方法の一つは１つ１つ実行することです。
+歌の学習、歌うこと、ダンスを行う方法の 1 つは 1 つ 1 つ実行することです。
 
 ```rust
 fn main() {
@@ -54,6 +54,7 @@ async fn async_main() {
     let f1 = learn_and_sing();
     let f2 = dance();
 
+    // learn_and_singとdanceの完了を待つ
     futures::join!(f1, f2);
 }
 
@@ -61,3 +62,5 @@ fn main() {
     block_on(async_main());
 }
 ```
+
+このように、同期処理のときとは違い、何かしらの重たい処理が入ったとしても大きな待ちが生まれないのが非同期処理です。
