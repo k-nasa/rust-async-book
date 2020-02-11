@@ -7,6 +7,8 @@
   - [なぜ非同期処理が必要なのか](./ch01-02-why_async_processing_is_requeired.md)
   - [並行処理と並列処理の違い](./ch01-03-concurrency_parallelism.md)
 - [ランタイムを読んで理解しよう](ch02-00.md)
+  - [ランタイムがしていることってなんだっけ？](./ch02-01-async-std-code-example.md)
+  - [コードリーディング](./ch02-02-reading-runtime.md)
 - [実際にランタイムを書いてみよう](./ch03-00.md)
 
 [さいごに](./ch04-00-conclusion.md)
