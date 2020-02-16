@@ -4,4 +4,9 @@ language = "ja"
 multilingual = false
 src = "src"
 title = "Rustで学ぶ非同期処理ランタイム"
-[preprocessor.index]
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/k-nasa/rust-async-book"
+git-repository-icon = "fa-github"
