@@ -9,7 +9,8 @@ paths = [
   "./src/ch01-03-concurrency_parallelism.md",
   "./src/ch02-00.md",
   "./src/ch02-01-async-std-code-example.md",
-  "./src/ch02-02-reading-runtime.md",
+  "./src/ch02-02-three-components.md",
+  "./src/ch02-03-start-up-runtime.md",
   "./src/ch03-00.md",
   "./src/ch04-00-conclusion.md"
 ]
