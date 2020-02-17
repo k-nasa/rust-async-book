@@ -47,6 +47,8 @@ Runtime への何かしらの処理(非同期タスクの登録など)はすべ�
 
 ## Runtime::new
 
+では、起動時の非同期ランタイムの持つ情報は初期状態でどの様になっているのでしょうか？次のコードはRuntimeのコンストラクタです。
+
 ```rust
 pub fn new() -> Runtime {
     let cpus = num_cpus::get().max(1);
@@ -67,7 +69,44 @@ pub fn new() -> Runtime {
 }
 ```
 
-次にランタイム用スレッドでは実際にどのような処理があっているのかを見ていきましょう。コードで言うと次の部分です。ここを潜ってみましょう。
-`RUNTIME.run()`
+次にランタイム用スレッドでは実際にどのような処理が行われているかを見ていきましょう。コードで言うと`RUNTIME.run()`の部分です。ここを見ていきましょう！
 
 ## RUNTIME.run()
+
+
+```rust
+pub fn run(&self) {
+    scope(|s| {
+        let mut idle = 0;
+        let mut delay = 0;
+
+        loop {
+            // Get a list of new machines to start, if any need to be started.
+            for m in self.make_machines() {
+                idle = 0;
+
+                s.builder()
+                    .name("async-std/machine".to_string())
+                    .spawn(move |_| {
+                        abort_on_panic(|| {
+                            let _ = MACHINE.with(|machine| machine.set(m.clone()));
+                            m.run(self);
+                        })
+                    })
+                    .expect("cannot start a machine thread");
+            }
+
+            // Sleep for a bit longer if the scheduler state hasn't changed in a while.
+            if idle > 10 {
+                delay = (delay * 2).min(10_000);
+            } else {
+                idle += 1;
+                delay = 1000;
+            }
+
+            thread::sleep(Duration::from_micros(delay));
+        }
+    })
+    .unwrap();
+}
+```
