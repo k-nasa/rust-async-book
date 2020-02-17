@@ -42,7 +42,6 @@ RUNTIME という static 変数を定義しています。この変数は最初�
 ```
 
 そして、２度目以降の参照では RUNTIME は初期化時のクロージャの返り値として見られます。つまり、最初の参照では、ランタイムの動作用のスレッドが起動され、２度目以降の参照では動作している、`Runtime`への参照になるということです。
-
 Runtime への何かしらの処理(非同期タスクの登録など)はすべてこの RUNTIME 変数から行われるため複数のランタイムを起動してしまうこともありません。また、ランタイムは必要になるまで起動されないので、無駄にリソースを食いつぶすこともありません。
 
 ## Runtime::new
@@ -52,16 +51,28 @@ Runtime への何かしらの処理(非同期タスクの登録など)はすべ�
 ```rust
 pub fn new() -> Runtime {
     let cpus = num_cpus::get().max(1);
+
+    // cpuのコア数文だけ、Processorを生成する。
     let processors: Vec<_> = (0..cpus).map(|_| Processor::new()).collect();
+
+    // 各々のProcessorが持つローカルタスクキューから非同期タスクを取得するためのハンドラーを作っておく。
     let stealers = processors.iter().map(|p| p.worker.stealer()).collect();
 
     Runtime {
         reactor: Reactor::new().unwrap(),
+
+        // グローバルタスクキューは初期化時は空
         injector: Injector::new(),
         stealers,
         sched: Mutex::new(Scheduler {
             processors,
+
+            // 前節で紹介したとおり、Machineは非同期タスクを実行するために起動するOSスレッドの抽象化である。
+            // 初期化時点では実行すべき非同期タスクは1つもないため、実行用のスレッドを起動する必要もない。
+            // そのため、machinesは空のベクターでよい。
+            // あとから見ていきますが、このmachinesは既存のスレッド数では非同期タスクを処理しきれなくなったときに、その都度作られます。
             machines: Vec::new(),
+
             progress: false,
             polling: false,
         }),
@@ -73,6 +84,7 @@ pub fn new() -> Runtime {
 
 ## RUNTIME.run()
 
+コードは次のようになっています。このコードは一気に読むには少し多いので、ポイントに絞って簡略化したコードをもとに説明していきます。
 
 ```rust
 pub fn run(&self) {
@@ -81,7 +93,6 @@ pub fn run(&self) {
         let mut delay = 0;
 
         loop {
-            // Get a list of new machines to start, if any need to be started.
             for m in self.make_machines() {
                 idle = 0;
 
@@ -96,17 +107,70 @@ pub fn run(&self) {
                     .expect("cannot start a machine thread");
             }
 
-            // Sleep for a bit longer if the scheduler state hasn't changed in a while.
             if idle > 10 {
+                // 10回以上何もせずにループしていた場合、
+                // 次のループ以降のスリープ時間を2倍ずつ増やしていく
+                // このときに最大スリープ時間は10,000マイクロ秒としている(10ミリ秒)
                 delay = (delay * 2).min(10_000);
             } else {
+                // ループのたびにidelをインクリメントする
                 idle += 1;
+
+                // idelが10に満たないときはスリープ時間は一律で1,000マイクロ秒となる(1ミリ秒)
                 delay = 1000;
             }
 
+            // 指定されたマイクロ秒分だけスリープする
             thread::sleep(Duration::from_micros(delay));
         }
     })
     .unwrap();
 }
 ```
+
+次のコードはランタイムの動作を一時的に止める`sleep`処理のところのみを取り出しました。
+
+```rust
+if idle > 10 {
+    // 10回以上何もせずにループしていた場合、
+    // 次のループ以降のスリープ時間を2倍ずつ増やしていく
+    // このときに最大スリープ時間は10,000マイクロ秒としている(10ミリ秒)
+    delay = (delay * 2).min(10_000);
+} else {
+    // ループのたびにidelをインクリメントする
+    idle += 1;
+
+    // idelが10に満たないときはスリープ時間は一律で1,000マイクロ秒となる(1ミリ秒)
+    delay = 1000;
+}
+
+// 指定されたマイクロ秒分だけスリープする
+thread::sleep(Duration::from_micros(delay));
+```
+
+ランタイムは無限ループで動作しています。そして、新しくMachineを生成するべきかを毎回判断しています。そのため、新しくmachineを作る必要がない状態が続いた場合cupを無駄に消費し続けることになってしまいます。なので、毎回ループの最後にスリープ処理をはさみ、スリープ時間は何もしなかった回数(idel)に応じて増加していくという方式をとっています。
+
+
+```rust
+pub fn run(&self) {
+    scope(|s| {
+        loop {
+            for m in self.make_machines() {
+                idle = 0;
+
+                s.builder()
+                    .name("async-std/machine".to_string())
+                    .spawn(move |_| {
+                        abort_on_panic(|| {
+                            let _ = MACHINE.with(|machine| machine.set(m.clone()));
+                            m.run(self);
+                        })
+                    })
+                    .expect("cannot start a machine thread");
+            }
+        }
+    })
+    .unwrap();
+}
+```
+
