@@ -84,23 +84,30 @@ pub fn new() -> Runtime {
 
 ## RUNTIME.run()
 
-コードは次のようになっています。このコードは一気に読むには少し多いので、ポイントに絞って簡略化したコードをもとに説明していきます。
+コードは多少簡略化していますが、次のようになっています。このコードは一気に読むには少し多いので、ポイントに絞って簡略化したコードをもとに説明していきます。小分けの説明をした後にこのコードに戻ってくるとスルスルっと理解できるはずです。
 
 ```rust
 pub fn run(&self) {
     scope(|s| {
+        // スリープ時間のもとになるカウンター
+        // ループの最後の方で使用している
         let mut idle = 0;
+
+        // スリープする時間
         let mut delay = 0;
 
         loop {
+            // make_machinesは必要になるmachineのリストを返す
             for m in self.make_machines() {
-                idle = 0;
+                idle = 0; // カウンターを初期化
 
+                // 非同期タスク実行用のスレッドを1つ起動する
                 s.builder()
                     .name("async-std/machine".to_string())
                     .spawn(move |_| {
                         abort_on_panic(|| {
-                            let _ = MACHINE.with(|machine| machine.set(m.clone()));
+                            // Machine::runメソッドを呼び出す。
+                            // 詳細な動作は後で見ていきましょう！
                             m.run(self);
                         })
                     })
@@ -150,27 +157,31 @@ thread::sleep(Duration::from_micros(delay));
 
 ランタイムは無限ループで動作しています。そして、新しくMachineを生成するべきかを毎回判断しています。そのため、新しくmachineを作る必要がない状態が続いた場合cupを無駄に消費し続けることになってしまいます。なので、毎回ループの最後にスリープ処理をはさみ、スリープ時間は何もしなかった回数(idel)に応じて増加していくという方式をとっています。
 
+次に残りの部分を見ていきましょう。
 
 ```rust
 pub fn run(&self) {
-    scope(|s| {
-        loop {
-            for m in self.make_machines() {
-                idle = 0;
+    loop {
+        // make_machinesは必要になるmachineのリストを返す
+        for m in self.make_machines() {
+            idle = 0; // カウンターを初期化
 
-                s.builder()
-                    .name("async-std/machine".to_string())
-                    .spawn(move |_| {
-                        abort_on_panic(|| {
-                            let _ = MACHINE.with(|machine| machine.set(m.clone()));
-                            m.run(self);
-                        })
+            // 非同期タスク実行用のスレッドを1つ起動する
+            s.builder()
+                .name("async-std/machine".to_string())
+                .spawn(move |_| {
+                    abort_on_panic(|| {
+                        // Machine::runメソッドを呼び出す。
+                        // 詳細な動作は後で見ていきましょう！
+                        m.run(self);
                     })
-                    .expect("cannot start a machine thread");
-            }
+                })
+                .expect("cannot start a machine thread");
         }
-    })
-    .unwrap();
+
+        // 先ほど説明したスリープ処理が入る
+    }
 }
 ```
 
+まず、`make_machines`メソッドで必要な個数分のmachineのリスト返します。そして、その個数分の非同期タスク実行用のスレッドを起動します。
