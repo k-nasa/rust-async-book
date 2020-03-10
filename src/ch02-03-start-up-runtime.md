@@ -305,13 +305,10 @@ fn run(&self, rt: &Runtime) {
             continue;
         }
 
-        // If another thread is already blocked on the reactor, there is no point in keeping
-        // the current thread around since there is too little work to do.
         if sched.polling {
             break;
         }
 
-        // Take out the machine associated with the current thread.
         let m = match sched
             .machines
             .iter()
@@ -321,12 +318,10 @@ fn run(&self, rt: &Runtime) {
             Some(pos) => sched.machines.swap_remove(pos),
         };
 
-        // Unlock the schedule poll the reactor until new I/O events arrive.
         sched.polling = true;
         drop(sched);
         rt.reactor.poll(None).unwrap();
 
-        // Lock the scheduler again and re-register the machine.
         sched = rt.sched.lock().unwrap();
         sched.polling = false;
         sched.machines.push(m);
@@ -336,10 +331,8 @@ fn run(&self, rt: &Runtime) {
         fails = 0;
     }
 
-    // When shutting down the thread, take the processor out if still available.
     let opt_p = self.processor.lock().take();
 
-    // Return the processor to the scheduler and remove the machine.
     if let Some(p) = opt_p {
         let mut sched = rt.sched.lock().unwrap();
         sched.processors.push(p);
