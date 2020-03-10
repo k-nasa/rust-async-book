@@ -89,7 +89,6 @@ pub struct Runnable(async_task::Task<Task>);
 impl Runnable {
     pub fn run(self) {
       // run task
-      // TODO ここで端折らずに説明しても良いかも知れない。 -> 自分が理解しきってないのでここでは説明できないが
     }
 }
 ```
@@ -223,7 +222,6 @@ impl<T> Spinlock<T> {
         // 値の確認と値の変更は一気にやらないと競合状態が発生してしまう。
         // そのため`swap`を使用している。
         while self.flag.swap(true, Ordering::Acquire) {
-            // TODO ここの意味がわかってないので調べる
             backoff.snooze();
         }
 

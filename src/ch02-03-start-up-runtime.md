@@ -188,3 +188,163 @@ pub fn run(&self) {
 
 ここまでで、ランタイムの起動時の説明は以上です。
 次からは必要になる machine 数を判定する`make_machines`と実際にタスクを処理していく`Machine::run`の動作を見ていきましょう。
+
+## make_machines
+
+TODO: 詳しい説明
+
+```rust
+/// 起動すべきMachineのリストを返す関数
+fn make_machines(&self) -> Vec<Arc<Machine>> {
+    let mut sched = self.sched.lock().unwrap();
+    let mut to_start = Vec::new(); // 新しいMachineのリスト
+
+    for m in &mut sched.machines {
+        // 動作していないmachineからprocessorを奪う
+        // この判定の時時、progressがtrueであってもfalseがセットされるため、
+        // 次回にはprocessorが奪われることになる
+        if !m.progress.swap(false, Ordering::SeqCst) {
+            // processorにNoneをセットして、processorを奪う
+            let opt_p = m.processor.try_lock().and_then(|mut p| p.take());
+
+            if let Some(p) = opt_p {
+                // 奪ったprocessorを使用して新しいMachineを作る
+                *m = Arc::new(Machine::new(p));
+                to_start.push(m.clone());
+            }
+        }
+    }
+
+    if !sched.polling && !sched.progress {
+        // processorリストから一つ取り出す
+        // 取り出せない時(リストが空の時)は何もしない
+        if let Some(p) = sched.processors.pop() {
+            let m = Arc::new(Machine::new(p));
+            to_start.push(m.clone());
+            sched.machines.push(m);
+        }
+
+        sched.progress = false;
+    }
+
+    to_start
+}
+```
+
+## Machine::run (簡易版)
+
+```rust
+fn run(&self, rt: &Runtime) {
+    const YIELDS: u32 = 3;
+    const SLEEPS: u32 = 10;
+    const RUNS: u32 = 64;
+
+    let mut runs = 0; // 連続でタスクを実行し続けた回数
+    let mut fails = 0; // タスクが見つからずに、何も実行しなかった回数
+
+    loop {
+        // machineの状態を動作中に変更
+        self.progress.store(true, Ordering::SeqCst);
+
+        // runsが定数RUNSを超えた場合、つまり、1つのタスクを実行し続けている場合
+        // 無限にそのタスクを実行し続けるのを防ぐために、別のタスクを実行する
+        if runs >= RUNS {
+            runs = 0;
+
+            if let Some(p) = self.processor.lock().as_mut() {
+                // グローバルタスクキューから非同期タスクを盗む
+                if let Steal::Success(task) = p.steal_from_global(rt) {
+                    // 盗めた場合、次に実行すべきタスクを盗んだ非同期タスクに切り替える
+                    // processorのslotにタスクをセットする
+                    p.schedule(rt, task);
+                }
+
+                // slotのタスクをprocessorのローカルタスクキューに戻し、別の非同期タスクを実行する
+                p.flush_slot(rt);
+            }
+        }
+
+        // グローバルタスクキューまたはローカルタスクキューからタスクを取り出す
+        if let Steal::Success(task) = self.find_task(rt) {
+            task.run();
+            runs += 1;
+            fails = 0;
+            continue;
+        }
+
+        fails += 1; // タスクを実行しなかった回数をインクリメント
+
+        if fails <= YIELDS {
+            // 連続で実行すべきタスクが見つからなかった回数がYIELDS未満の時
+            // このスレッドをしばらくの間実行しないことをOSスケジューラーに伝える
+            thread::yield_now();
+            continue;
+        }
+
+        // 更に、連続でタスクが見つからなかった場合
+        // しばらくの間スリープします
+        if fails <= YIELDS + SLEEPS {
+            // 他のMachineにprocessorを盗まれないようにロックを保持
+            let opt_p = self.processor.lock().take();
+
+            thread::sleep(Duration::from_micros(10)); // 10μsスリープ
+            *self.processor.lock() = opt_p;
+            continue;
+        }
+
+        // 以下、更に連続でタスクが見つからなかった場合
+
+        let mut sched = rt.sched.lock().unwrap();
+
+        // One final check for available tasks while the scheduler is locked.
+        if let Some(task) = iter::repeat_with(|| self.find_task(rt))
+            .find(|s| !s.is_retry())
+            .and_then(|s| s.success())
+        {
+            self.schedule(rt, task);
+            continue;
+        }
+
+        // If another thread is already blocked on the reactor, there is no point in keeping
+        // the current thread around since there is too little work to do.
+        if sched.polling {
+            break;
+        }
+
+        // Take out the machine associated with the current thread.
+        let m = match sched
+            .machines
+            .iter()
+            .position(|elem| ptr::eq(&**elem, self))
+        {
+            None => break, // The processor was stolen.
+            Some(pos) => sched.machines.swap_remove(pos),
+        };
+
+        // Unlock the schedule poll the reactor until new I/O events arrive.
+        sched.polling = true;
+        drop(sched);
+        rt.reactor.poll(None).unwrap();
+
+        // Lock the scheduler again and re-register the machine.
+        sched = rt.sched.lock().unwrap();
+        sched.polling = false;
+        sched.machines.push(m);
+        sched.progress = true;
+
+        runs = 0;
+        fails = 0;
+    }
+
+    // When shutting down the thread, take the processor out if still available.
+    let opt_p = self.processor.lock().take();
+
+    // Return the processor to the scheduler and remove the machine.
+    if let Some(p) = opt_p {
+        let mut sched = rt.sched.lock().unwrap();
+        sched.processors.push(p);
+        sched.machines.retain(|elem| !ptr::eq(&**elem, self));
+    }
+}
+
+```
