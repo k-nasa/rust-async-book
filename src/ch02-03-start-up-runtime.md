@@ -267,8 +267,10 @@ fn run(&self, rt: &Runtime) {
         // グローバルタスクキューまたはローカルタスクキューからタスクを取り出す
         if let Steal::Success(task) = self.find_task(rt) {
             task.run();
-            runs += 1;
-            fails = 0;
+
+            runs += 1; // タスクを実行したのでカウントをインクリメントする
+            fails = 0; // タスクを実行したので、何も実行しなかったカウントを初期化する
+
             continue;
         }
 
@@ -296,25 +298,12 @@ fn run(&self, rt: &Runtime) {
 
         let mut sched = rt.sched.lock().unwrap();
 
-        // One final check for available tasks while the scheduler is locked.
-        if let Some(task) = iter::repeat_with(|| self.find_task(rt))
-            .find(|s| !s.is_retry())
-            .and_then(|s| s.success())
-        {
-            self.schedule(rt, task);
-            continue;
-        }
-
-        if sched.polling {
-            break;
-        }
-
         let m = match sched
             .machines
             .iter()
-            .position(|elem| ptr::eq(&**elem, self))
+            .position(|elem| ptr::eq(&**elem, self)) // schedのmachineリストに現在実行しているmachineがあるか
         {
-            None => break, // The processor was stolen.
+            None => break, // 無いなら、processorを盗まれている
             Some(pos) => sched.machines.swap_remove(pos),
         };
 
