@@ -51,31 +51,6 @@ pub struct Runtime {
 
 少し、定義時に出てきた型について見ていきましょう。これらはどのようなものなのでしょうか？
 
-## Reactor
-
-TODO Reactor の説明を書く
-
-```rust
-pub struct Reactor {
-    poller: mio::Poll,
-
-    events: Mutex<mio::Events>,
-
-    entries: Mutex<Slab<Arc<Entry>>>,
-
-    notify_reg: (mio::Registration, mio::SetReadiness),
-
-    notify_token: mio::Token,
-}
-
-struct Entry {
-    token: mio::Token,
-
-    readers: Mutex<Vec<Waker>>,
-    writers: Mutex<Vec<Waker>>,
-}
-```
-
 ### Injector
 
 Runtime の定義に`Injector`という型がありましたね。`Injector`とはなんでしょうか？これは複数のスレッド間で共有できるキューです。実行待ちの非同期タスクを保持するために用いられます。実際にランタイムが非同期タスクが保持したり、取り出したりといった動作は後から見ていきましょう。
@@ -290,3 +265,29 @@ struct Processor {
 ```
 
 グローバルキューだけで非同期タスクを管理するようにしてしまうと、複数の Processor がグローバルキューから非同期タスクを取り出そうとしたときに競合状態が発生してしまいます。そのため、各々の Processor が実行すべき非同期タスクをローカルタスクキューに保持していく形となっています。また、ローカルキューをスキップする最適化として、slot に次に実行する非同期タスクを保持しています。
+
+## Reactor
+
+TODO Reactor の説明を書く
+
+```rust
+pub struct Reactor {
+    poller: mio::Poll,
+
+    events: Mutex<mio::Events>,
+
+    entries: Mutex<Slab<Arc<Entry>>>,
+
+    notify_reg: (mio::Registration, mio::SetReadiness),
+
+    notify_token: mio::Token,
+}
+
+struct Entry {
+    token: mio::Token,
+
+    readers: Mutex<Vec<Waker>>,
+    writers: Mutex<Vec<Waker>>,
+}
+```
+
