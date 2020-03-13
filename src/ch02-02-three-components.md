@@ -51,11 +51,34 @@ pub struct Runtime {
 
 少し、定義時に出てきた型について見ていきましょう。これらはどのようなものなのでしょうか？
 
+## Reactor
+
+TODO Reactor の説明を書く
+
+```rust
+pub struct Reactor {
+    poller: mio::Poll,
+
+    events: Mutex<mio::Events>,
+
+    entries: Mutex<Slab<Arc<Entry>>>,
+
+    notify_reg: (mio::Registration, mio::SetReadiness),
+
+    notify_token: mio::Token,
+}
+
+struct Entry {
+    token: mio::Token,
+
+    readers: Mutex<Vec<Waker>>,
+    writers: Mutex<Vec<Waker>>,
+}
+```
+
 ### Injector
 
-Runtime の定義に`Injector`という型がありましたね。`Injector`とはなんでしょうか？これは複数のスレッド間で共有できるキューです。今回は主に実行待ちの非同期タスクを保持するために用いられます。
-
-実際にランタイムが非同期タスクが保持したり、取り出したりといった動作は後から見ていきましょう。
+Runtime の定義に`Injector`という型がありましたね。`Injector`とはなんでしょうか？これは複数のスレッド間で共有できるキューです。実行待ちの非同期タスクを保持するために用いられます。実際にランタイムが非同期タスクが保持したり、取り出したりといった動作は後から見ていきましょう。
 
 ```rust
 // Injectorのコード例
@@ -70,13 +93,6 @@ q.push(2);
 assert_eq!(q.steal(), Steal::Success(1));
 assert_eq!(q.steal(), Steal::Success(2));
 assert_eq!(q.steal(), Steal::Empty);
-
-// `steal`でEmpty, Retry, Successのどれかを返す。
-// pub enum Steal<T> {
-//     Empty,
-//     Success(T),
-//     Retry,
-// }
 ```
 
 ### Runnable
@@ -274,40 +290,3 @@ struct Processor {
 ```
 
 グローバルキューだけで非同期タスクを管理するようにしてしまうと、複数の Processor がグローバルキューから非同期タスクを取り出そうとしたときに競合状態が発生してしまいます。そのため、各々の Processor が実行すべき非同期タスクをローカルタスクキューに保持していく形となっています。また、ローカルキューをスキップする最適化として、slot に次に実行する非同期タスクを保持しています。
-
-## Reactor
-
-TODO Reactor の説明を書く
-
-```rust
-/// The state of a networking driver.
-pub struct Reactor {
-    /// A mio instance that polls for new events.
-    poller: mio::Poll,
-
-    /// A list into which mio stores events.
-    events: Mutex<mio::Events>,
-
-    /// A collection of registered I/O handles.
-    entries: Mutex<Slab<Arc<Entry>>>,
-
-    /// Dummy I/O handle that is only used to wake up the polling thread.
-    notify_reg: (mio::Registration, mio::SetReadiness),
-
-    /// An identifier for the notification handle.
-    notify_token: mio::Token,
-}
-
-/// Data associated with a registered I/O handle.
-#[derive(Debug)]
-struct Entry {
-    /// A unique identifier.
-    token: mio::Token,
-
-    /// Tasks that are blocked on reading from this I/O handle.
-    readers: Mutex<Vec<Waker>>,
-
-    /// Tasks that are blocked on writing to this I/O handle.
-    writers: Mutex<Vec<Waker>>,
-}
-```

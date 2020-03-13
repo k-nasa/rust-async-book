@@ -233,6 +233,8 @@ fn make_machines(&self) -> Vec<Arc<Machine>> {
 
 ## Machine::run (簡易版)
 
+では今からasync-stdランタイムの心臓部である`Machine::run`のコードを呼んでいきます。コード行数としては100行を超えるため、最初は面を喰らうかもしれません。ただ一つ一つの処理では難しいことはしていません。初見では理解できなくても数回読んでみることで理解できるはずです。なので共に頑張って読んでいきましょう！
+
 ```rust
 fn run(&self, rt: &Runtime) {
     const YIELDS: u32 = 3;
@@ -251,11 +253,13 @@ fn run(&self, rt: &Runtime) {
         if runs >= RUNS {
             runs = 0;
 
+            // このmachineがprocessorを持っていてロックを取得できた時
+            // つまり、ほかのmachineにprocessorが奪われていない時の処理
             if let Some(p) = self.processor.lock().as_mut() {
                 // グローバルタスクキューから非同期タスクを盗む
                 if let Steal::Success(task) = p.steal_from_global(rt) {
-                    // 盗めた場合、次に実行すべきタスクを盗んだ非同期タスクに切り替える
-                    // processorのslotにタスクをセットする
+                    // processorのslot(次に実行するべきタスク)にグローバルタスクキューから盗んだタスクをセットする
+                    // 繰り返しにはなりますが、slotのタスクを切り替えるのは1つのタスクを無限に実行し続けるのを防ぐため
                     p.schedule(rt, task);
                 }
 
@@ -264,7 +268,11 @@ fn run(&self, rt: &Runtime) {
             }
         }
 
-        // グローバルタスクキューまたはローカルタスクキューからタスクを取り出す
+        // 実行すべき非同期タスクを探す
+        // この時のタスクを探す順序としては次のようになっている
+        // 1. このmachineの持つprocessorのローカルタスクキュー
+        // 2. ランタイムの持つグローバルタスクキュー
+        // 3. 他のprocessorのローカルタスクキューから盗む
         if let Steal::Success(task) = self.find_task(rt) {
             task.run();
 
@@ -303,7 +311,7 @@ fn run(&self, rt: &Runtime) {
             .iter()
             .position(|elem| ptr::eq(&**elem, self)) // schedのmachineリストに現在実行しているmachineがあるか
         {
-            None => break, // 無いなら、processorを盗まれている
+            None => break, // 無いなら、processorを盗まれているため、ループを終了してこのmachineに紐づくスレッドを閉じる
             Some(pos) => sched.machines.swap_remove(pos),
         };
 
@@ -320,8 +328,13 @@ fn run(&self, rt: &Runtime) {
         fails = 0;
     }
 
+    // ループ終了後の処理
+    // つまり、Machineに紐づくスレッドが閉じられるときの前処理を実行する
+
     let opt_p = self.processor.lock().take();
 
+    // このmachineの持つprocessorをschedulerのprocessorリストに戻す
+    // その後、schedulerの持つmachineリストからこのMachineを削除する
     if let Some(p) = opt_p {
         let mut sched = rt.sched.lock().unwrap();
         sched.processors.push(p);
