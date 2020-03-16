@@ -2,7 +2,7 @@
 
 # ランタイムの起動
 
-そもそもランタイムはいくつも動作させるものではありませんよね？なので、最初に必要になったときだけランタイムを起動して、以後起動したランタイムを参照するようにしたいです。そういった用途では、`once_cell`というライブラリの`Lazy`が使えます。次のコードを見て下さい。
+そもそもランタイムはいくつも動作させるものではありませんよね？なので、最初に必要になったときだけランタイムを起動して、以後起動したランタイムを参照するようにしたいです。そういった用途では、`once_cell`というライブラリの`Lazy`が使えます。次のコードはランタイムの定義です。
 
 ```rust
 use std::thread;
@@ -37,12 +37,11 @@ RUNTIME という static 変数を定義しています。この変数は最初�
     .spawn(|| abort_on_panic(|| RUNTIME.run()))
     .expect("cannot start a runtime thread");
 
-  Runtime::new()
+  Runtime::new() //2度目以降の参照ではこのオブジェクトが参照される
 }
 ```
 
-そして、２度目以降の参照では RUNTIME は初期化時のクロージャの返り値として見られます。つまり、最初の参照では、ランタイムの動作用のスレッドが起動され、２度目以降の参照では動作している、`Runtime`への参照になるということです。
-Runtime への何かしらの処理(非同期タスクの登録など)はすべてこの RUNTIME 変数から行われるため複数のランタイムを起動してしまうこともありません。また、ランタイムは必要になるまで起動されないので、無駄にリソースを食いつぶすこともありません。
+そして、２度目以降の参照では RUNTIME は初期化時のクロージャの返り値として見られます。つまり、最初の参照では、ランタイムの動作用のスレッドが起動され、２度目以降の参照では動作している、`Runtime`への参照になるということです。Runtime への何かしらの処理(非同期タスクの登録など)はすべてこの RUNTIME 変数から行われるため複数のランタイムを起動してしまうこともありません。また、ランタイムは必要になるまで起動されないので、無駄にリソースを食いつぶすこともありません。
 
 ## Runtime::new
 
@@ -191,7 +190,7 @@ pub fn run(&self) {
 
 ## make_machines
 
-TODO: 詳しい説明
+make_machines を呼び出すことで、必要なときに必要な文だけ Machine(os thread)を起動させることが出来ます。また、必要なくなった Machine が持っている processor(実行権限)を奪い、他の Machine に割り当てることで不必要にリソースを使わなくて済むようにしています。
 
 ```rust
 /// 起動すべきMachineのリストを返す関数
@@ -201,8 +200,9 @@ fn make_machines(&self) -> Vec<Arc<Machine>> {
 
     for m in &mut sched.machines {
         // 動作していないmachineからprocessorを奪う
-        // この判定の時時、progressがtrueであってもfalseがセットされるため、
-        // 次回にはprocessorが奪われることになる
+        // この判定の時progressがtrueであってもfalseがセットされるため、
+        // 次にmake_machinesが呼び出されるとprocessorを奪われる可能性がある
+        // ただし、machineは動作時に自身のprogressをtrueにするため、必ずprocessorを奪われるわけではない
         if !m.progress.swap(false, Ordering::SeqCst) {
             // processorにNoneをセットして、processorを奪う
             let opt_p = m.processor.try_lock().and_then(|mut p| p.take());
@@ -239,34 +239,12 @@ fn make_machines(&self) -> Vec<Arc<Machine>> {
 fn run(&self, rt: &Runtime) {
     const YIELDS: u32 = 3;
     const SLEEPS: u32 = 10;
-    const RUNS: u32 = 64;
 
-    let mut runs = 0; // 連続でタスクを実行し続けた回数
     let mut fails = 0; // タスクが見つからずに、何も実行しなかった回数
 
     loop {
         // machineの状態を動作中に変更
         self.progress.store(true, Ordering::SeqCst);
-
-        // runsが定数RUNSを超えた場合、つまり、1つのタスクを実行し続けている場合
-        // 無限にそのタスクを実行し続けるのを防ぐために、別のタスクを実行する
-        if runs >= RUNS {
-            runs = 0;
-
-            // このmachineがprocessorを持っていてロックを取得できた時
-            // つまり、ほかのmachineにprocessorが奪われていない時の処理
-            if let Some(p) = self.processor.lock().as_mut() {
-                // グローバルタスクキューから非同期タスクを盗む
-                if let Steal::Success(task) = p.steal_from_global(rt) {
-                    // processorのslot(次に実行するべきタスク)にグローバルタスクキューから盗んだタスクをセットする
-                    // 繰り返しにはなりますが、slotのタスクを切り替えるのは1つのタスクを無限に実行し続けるのを防ぐため
-                    p.schedule(rt, task);
-                }
-
-                // slotのタスクをprocessorのローカルタスクキューに戻し、別の非同期タスクを実行する
-                p.flush_slot(rt);
-            }
-        }
 
         // 実行すべき非同期タスクを探す
         // この時のタスクを探す順序としては次のようになっている
@@ -276,7 +254,6 @@ fn run(&self, rt: &Runtime) {
         if let Steal::Success(task) = self.find_task(rt) {
             task.run();
 
-            runs += 1; // タスクを実行したのでカウントをインクリメントする
             fails = 0; // タスクを実行したので、何も実行しなかったカウントを初期化する
 
             continue;
@@ -316,7 +293,11 @@ fn run(&self, rt: &Runtime) {
         };
 
         sched.polling = true;
-        drop(sched);
+        drop(sched); // schedをdropすることによって取得したロックを解放している
+
+        // reactorをpollしてI/Oイベントによってブロックされた非同期タスクが再開可能かどうかを問い合わせる。
+        // 引数としてtimeout時間を渡している。このときNoneを渡しているためtimeout時間は指定されていない
+        // つまり、何かしらの非同期タスクが再開可能になるもしくは新しい非同期タスクが生成されるまでこのMachineの動作はブロックする。
         rt.reactor.poll(None).unwrap();
 
         sched = rt.sched.lock().unwrap();
@@ -324,7 +305,6 @@ fn run(&self, rt: &Runtime) {
         sched.machines.push(m);
         sched.progress = true;
 
-        runs = 0;
         fails = 0;
     }
 
@@ -341,5 +321,9 @@ fn run(&self, rt: &Runtime) {
         sched.machines.retain(|elem| !ptr::eq(&**elem, self));
     }
 }
-
 ```
+
+ここまででランタイムの大まかな処理は終わりです。
+長いことお疲れさまでした！
+
+では次に非同期タスクがどのようにランタイムに登録されるのかを見ていきましょう！(その前に休憩が必要かもしれませんね。コーヒーでも飲んで再開しましょうか)
