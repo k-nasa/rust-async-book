@@ -27,7 +27,9 @@ https://github.com/async-rs/async-std/pull/631
 
 ```rust
 pub struct Runtime {
-    // リアクター TODO リアクターの説明をする。まだ理解していないので後から書く!!
+    // リアクター。IOイベントのキューとして機能する
+    // I/Oイベントにより非同期タスクの処理がブロックされた場合にこのリアクターに登録しておきます。
+    // そして、I/Oイベントが終了した時にブロックされた非同期タスクの処理を再開させます。
     reactor: Reactor,
 
     // グローバルな非同期タスクのキュー
@@ -46,16 +48,14 @@ pub struct Runtime {
 
 - グローバルな非同期タスクのキュー
 - 各`Processor`の持つローカルキューからタスクを盗むためのハンドラー(詳細は後述します!)
-- リアクター TODO 詳細な説明を書くべきでは？
+- リアクター(I/O イベントのキュー)
 - スケジューラーの状態
 
 少し、定義時に出てきた型について見ていきましょう。これらはどのようなものなのでしょうか？
 
 ### Injector
 
-Runtime の定義に`Injector`という型がありましたね。`Injector`とはなんでしょうか？これは複数のスレッド間で共有できるキューです。今回は主に実行待ちの非同期タスクを保持するために用いられます。
-
-実際にランタイムが非同期タスクが保持したり、取り出したりといった動作は後から見ていきましょう。
+Runtime の定義に`Injector`という型がありましたね。`Injector`とはなんでしょうか？これは複数のスレッド間で共有できるキューです。実行待ちの非同期タスクを保持するために用いられます。実際にランタイムが非同期タスクが保持したり、取り出したりといった動作は後から見ていきましょう。
 
 ```rust
 // Injectorのコード例
@@ -70,13 +70,6 @@ q.push(2);
 assert_eq!(q.steal(), Steal::Success(1));
 assert_eq!(q.steal(), Steal::Success(2));
 assert_eq!(q.steal(), Steal::Empty);
-
-// `steal`でEmpty, Retry, Successのどれかを返す。
-// pub enum Steal<T> {
-//     Empty,
-//     Success(T),
-//     Retry,
-// }
 ```
 
 ### Runnable
@@ -89,7 +82,6 @@ pub struct Runnable(async_task::Task<Task>);
 impl Runnable {
     pub fn run(self) {
       // run task
-      // TODO ここで端折らずに説明しても良いかも知れない。 -> 自分が理解しきってないのでここでは説明できないが
     }
 }
 ```
@@ -117,18 +109,14 @@ assert_eq!(s.steal(), Steal::Empty);
 
 ### Scheduler
 
-これはシンプルにスケジューラーの状態を持つ型です。次のような定義になっています。詳細はここでは考える必要はありませんが、後々のコードを読んでいくときにどのような状態を持っていくか知っておいたほうが良いので紹介します。
-
-TODO もっと詳しく
+これはスケジューラーの状態を持つ型です。次のような定義になっています。詳細はここでは考える必要はありませんが、後々のコードを読んでいくときにどのような状態を持っていくか知っておいたほうが良いので紹介します。
 
 ```rust
 // スケジューラーの状態
 struct Scheduler {
-    /// Set to `true` every time before a machine blocks polling the reactor.
-    progress: bool,
-
-    /// Set to `true` while a machine is polling the reactor.
+    // リアクターに対して再開できる非同期タスクがあるのかを問い合わせるときにこのフラグがtrueになる。
     polling: bool,
+    progress: bool,
 
     //アイドル状態のプロセッサーリスト
     processors: Vec<Processor>,
@@ -165,23 +153,7 @@ OS スレッドに付き一つの Machine があります。これはスレッ�
 
 また、progress が false になっている Machine(動作中ではないスレッド)は Processor(実行権) を他の Machine に移譲します。この Processor の移譲処理はランタイムが行っています。
 
-### コラム Option 型の説明を少々
-
-Rust をやったことがない方のために`Option`型を説明します。`Option`型は他の言語風に言うなら Null 許容型です。実装としては次のようなただの enum 型です。
-null のある言語であれば、値がない時(例えば DB への検索で、検索条件にマッチするレコードが無かったとき)に null を使えばよいのですが、Rust には null に相当する値はありません。
-なので、値がない可能性がある場合には`Option`型を使います。
-
-```rust
-pub enum Option<T> {
-    // 値がない時
-    None,
-
-    // 値がある時、`T`型をSomeでラップして返す。
-    // `T`型は何でも良い
-    Some(T),
-}
-
-```
+---
 
 ### コラム スピンロック(Spinlock)とは
 
@@ -223,7 +195,6 @@ impl<T> Spinlock<T> {
         // 値の確認と値の変更は一気にやらないと競合状態が発生してしまう。
         // そのため`swap`を使用している。
         while self.flag.swap(true, Ordering::Acquire) {
-            // TODO ここの意味がわかってないので調べる
             backoff.snooze();
         }
 
@@ -261,6 +232,8 @@ impl<'a, T> DerefMut for SpinlockGuard<'a, T> {
 
 TODO Atomic 変数やメモリ順序についての説明を余裕があったら書く。
 
+---
+
 ## Processor の基本構造
 
 それでは本題に戻りましょう。先程までに Machine の基本構造を見ていきましたね。次に Processor の基本構造を見ていきましょう。
@@ -275,41 +248,26 @@ struct Processor {
 }
 ```
 
-グローバルキューだけで非同期タスクを管理するようにしてしまうと、複数の Processor がグローバルキューから非同期タスクを取り出そうとしたときに競合状態が発生してしまいます。そのため、各々の Processor が実行すべき非同期タスクをローカルタスクキューに保持していく形となっています。また、ローカルキューをスキップする最適化として、slot に次に実行する非同期タスクを保持しています。
+グローバルキューだけで非同期タスクを管理するようにしてしまうと、複数の Processor がグローバルキューから非同期タスクを取り出そうとしたときに競合状態が発生してしまいます。そのため、グローバルタスクキューからタスクを取り出す時は一度グローバルタスクキューをロックして他がタスクを取り出せないようにする必要があります。このグローバルタスクキューのロック取得をしなくて済むように各々の Processor が実行すべき非同期タスクをローカルタスクキューに保持していく形となっています。
+また、ローカルキューをスキップする最適化として、slot に次に実行する非同期タスクを保持しています。slot に次のタスクを保持しておくことで、ローカルタスクキューやグローバルタスクキューへの毎回問い合わせをすることなくタスクを実行することが出来ます。
 
 ## Reactor
 
-TODO Reactor の説明を書く
+Reactor は I/O イベントのキューとして作用します。I/O イベントキューとはなんのためにあるのでしょうか？次のようなコードを例に考えてみましょう。
 
 ```rust
-/// The state of a networking driver.
-pub struct Reactor {
-    /// A mio instance that polls for new events.
-    poller: mio::Poll,
+// udp socketをopen
+let socket = UdpSocket::bind("127.0.0.1:0").await?;
 
-    /// A list into which mio stores events.
-    events: Mutex<mio::Events>,
+// データ読込用のバッファを確保する
+let mut buf = vec![0; 1024];
 
-    /// A collection of registered I/O handles.
-    entries: Mutex<Slab<Arc<Entry>>>,
+// udp socketからデータを読み込む
+socket.recv_from(&mut buf).await?;
 
-    /// Dummy I/O handle that is only used to wake up the polling thread.
-    notify_reg: (mio::Registration, mio::SetReadiness),
-
-    /// An identifier for the notification handle.
-    notify_token: mio::Token,
-}
-
-/// Data associated with a registered I/O handle.
-#[derive(Debug)]
-struct Entry {
-    /// A unique identifier.
-    token: mio::Token,
-
-    /// Tasks that are blocked on reading from this I/O handle.
-    readers: Mutex<Vec<Waker>>,
-
-    /// Tasks that are blocked on writing to this I/O handle.
-    writers: Mutex<Vec<Waker>>,
-}
+// do something
 ```
+
+このコードでは udp socket からデータを読み込むまで次の行が実行されることはありません。それではいつになったら処理を再開することが出来るのでしょうか？upd パケットを受信した時このプログラムの動作を再開させることが出来るはずです。しかし、「upd パケットを受信した」というのはどうやって管理するのでしょうか？方法の一つとしては、この非同期タスクが継続可能かどうかを逐一問い合わせる方法があります。しかし、この方法では無駄な問い合わせが発生してしまい処理効率が良くありません。
+
+そこで Reactor(I/O イベントのキュー)が使えます。この例だと、「upd パケットの読み込みイベント」を Reactor に登録しておきます。そして読み込み可能となったときにこの非同期タスクを再開可能として処理を再開させます。
