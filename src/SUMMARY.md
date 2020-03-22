@@ -10,7 +10,6 @@
   - [ランタイムがしていることってなんだっけ？](./ch02-01-async-std-code-example.md)
   - [主要なコンポーネントの基本構造](./ch02-02-three-components.md)
   - [ランタイムの起動と主な動作](./ch02-03-start-up-runtime.md)
-  - [非同期タスクの起動](./ch02-04-spawn-async-task.md)
 - [実際にランタイムを書いてみよう](./ch03-00.md)
 
 [さいごに](./ch04-00-conclusion.md)
