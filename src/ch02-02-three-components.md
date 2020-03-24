@@ -33,6 +33,7 @@ pub struct Runtime {
     reactor: Reactor,
 
     // グローバルな非同期タスクのキュー
+    // 非同期タスクが生成されるとこのグローバルタスクキューまたは、後述するProcessorのローカルタスクキューに入ります。
     // キューの中身の型はRunnable
     injector: Injector<Runnable>,
 
