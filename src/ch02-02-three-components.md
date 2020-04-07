@@ -1,14 +1,6 @@
 では、以下のコードの実装を読んでいきます。
 
-https://github.com/async-rs/async-std/tree/new-scheduler/src/rt/runtime.rs
-
----
-
-ちなみにこのコードに関する議論はこの PR で行われています。
-
-https://github.com/async-rs/async-std/pull/631
-
----
+https://github.com/k-nasa/async-std/tree/new-scheduler/src/rt
 
 ここからは Rust のコードがゴリゴリ出てくるので、Rust をやったことがない人にとっては学習コストが上がってくるかと思います。ともに頑張りましょう！
 
@@ -91,14 +83,14 @@ impl Runnable {
 
 次に`Stealer`について見ていきましょう。`Stealer`はキューそのものではなく、キューからタスクを取得するときのためのハンドラーです。
 
-詳細はあとから見ていきますが、各プロセッサーが各々で実行待ちのタスクを保持するローカルキューを持っています。そして、自分のローカルキューからタスクをどんどん消費していきます。しかし、この時、自分のローカルキューからタスクが無くなったらどうなるでしょうか？(すべてのタスクを消費した勤勉なプロセッサーが居た場合ですね。) 他のプロセッサーがせこせこ働いているのに自分だけ休むわけには行きませんよね。実行可能なタスクを見つける方法の１つは Runtime が持つグローバルキューからタスクを貰い受けることですね。ではグローバルキューにタスクがない時はどうでしょうか？ この時プロセッサーは他のプロセッサーの実行待ちのタスクを盗みます。 このときに別のプロセッサーからタスクを取得するためのハンドラーが`Stealer`になります。
+詳細はあとから見ていきますが、各プロセッサーが各々で実行待ちのタスクを保持するローカルキューを持っています。そして、自身のローカルキューからタスクをどんどん消費していきます。しかし、この時、自分のローカルキューからタスクが無くなったらどうなるでしょうか？(すべてのタスクを消費した勤勉なプロセッサーが居た場合ですね。) 他のプロセッサーがせこせこ働いているのに自分だけ休むわけには行きませんよね。実行可能なタスクを見つける方法の１つは Runtime が持つグローバルキューからタスクを貰い受けることですね。ではグローバルキューにタスクがない時はどうでしょうか？ この時プロセッサーは他のプロセッサーの実行待ちのタスクを盗みます。 このときに別のプロセッサーからタスクを取得するためのハンドラーが`Stealer`になります。
 
 主な使い方としては`Injector`と変わりませんが一応コード例を紹介しておきます。
 
 ```rust
 use crossbeam_deque::{Steal, Worker};
 
-let w = Worker::new_lifo(); //LIFOなキューを初期化
+let w = Worker::new_lifo(); //キューを初期化
 w.push(1);
 w.push(2);
 
@@ -110,20 +102,13 @@ assert_eq!(s.steal(), Steal::Empty);
 
 ### Scheduler
 
-これはスケジューラーの状態を持つ型です。次のような定義になっています。詳細はここでは考える必要はありませんが、後々のコードを読んでいくときにどのような状態を持っていくか知っておいたほうが良いので紹介します。
+これはスケジューラーの状態を持つ型です。次のような定義になっています。
 
 ```rust
 // スケジューラーの状態
 struct Scheduler {
     // リアクターに対して再開できる非同期タスクがあるのかを問い合わせるときにこのフラグがtrueになる。
     polling: bool,
-    progress: bool,
-
-    //アイドル状態のプロセッサーリスト
-    processors: Vec<Processor>,
-
-    // 動作しているMachineリスト(Machineはスレッドのことだと思って差し支えない)
-    machines: Vec<Arc<Machine>>,
 }
 ```
 
@@ -142,13 +127,11 @@ struct Scheduler {
 // プロセッサーで動作しているスレッド
 struct Machine {
     // プロセッサーを保持する。
-    // このMachineがアイドル状態の時に他のMachineがプロセッサーを奪う時がある
-    processor: Spinlock<Option<Processor>>,
-
-    // タスクを実行するたびにtrueがセットされる
-    progress: AtomicBool,
+    processor: Spinlock<Processor>,
 }
 ```
+
+TODO processor の委譲処理はなくなったのでいい感じに書き換える
 
 OS スレッドに付き一つの Machine があります。これはスレッドが起動する時、停止するときも連動して、Machine の生成、破棄が行われます。つまり、OS スレッドの個数分の Machine オブジェクトを Runtime が管理しています。すこし`processor`の定義について見ていきましょう。`processor`は`Spinlock`という型でラップされた`Option<Processor>`です。 Processor というのはここでは実行権を持つか持たないかを表すものだと考えていいでしょう。Machine に Processor が割り当てられていないとき(つまり processor が None のとき)は Machine は非同期タスクの実行権を持ちません。ランタイムは実行開始時に、いくつかの Processor オブジェクトを持ちます。現状では Processor の数は cpu のコア数分です。この Processor オブジェクトを実行したい Machine に割り当てることによって、cpu のコア数より大幅に大きい数の Machine が走らないように数を制限しています。 Machine は OS スレッドにつき 1 つなので、cpu のコア数より大幅に大きい数の Machine が走らないということは、OS スレッドが多分に作られないということでもあります。
 
@@ -167,8 +150,7 @@ OS スレッドに付き一つの Machine があります。これはスレッ�
 ```rust
 pub struct Spinlock<T> {
     // ロックされていない(false) or ロックされている(true)
-    // (余談ですが、flagというフィールド名ではなくlockedなどに変更したほうが分かりやすいのではないかと思います。)
-    flag: AtomicBool,
+    locked: AtomicBool,
 
     // 保持するデータ
     value: UnsafeCell<T>,
@@ -182,7 +164,7 @@ impl<T> Spinlock<T> {
     // コンストラクタ
     pub const fn new(value: T) -> Spinlock<T> {
         Spinlock {
-            flag: AtomicBool::new(false),
+            locked: AtomicBool::new(false),
             value: UnsafeCell::new(value),
         }
     }
@@ -191,11 +173,11 @@ impl<T> Spinlock<T> {
     pub fn lock(&self) -> SpinlockGuard<'_, T> {
         let backoff = Backoff::new();
 
-        // flagがtrueの場合(他によってロックされている場合)は無限にループを続ける
-        // falseの時はflagにtrueをセットしてループから抜ける。
+        // lockedがtrueの場合(他によってロックされている場合)は無限にループを続ける
+        // falseの時はlockedにtrueをセットしてループから抜ける。
         // 値の確認と値の変更は一気にやらないと競合状態が発生してしまう。
-        // そのため`swap`を使用している。
-        while self.flag.swap(true, Ordering::Acquire) {
+        // そのため`compare_and_swap`を使用している。
+        while self.locked.compare_and_swap(false, true, Ordering::Acquire) {
             backoff.snooze();
         }
 
@@ -211,8 +193,8 @@ pub struct SpinlockGuard<'a, T> {
 // デストラクタ
 impl<'a, T> Drop for SpinlockGuard<'a, T> {
     fn drop(&mut self) {
-        // ロックの開放時は単にflagをfalseにする。
-        self.parent.flag.store(false, Ordering::Release);
+        // ロックの開放時は単にlockedをfalseにする。
+        self.parent.locked.store(false, Ordering::Release);
     }
 }
 
@@ -230,8 +212,6 @@ impl<'a, T> DerefMut for SpinlockGuard<'a, T> {
     }
 }
 ```
-
-TODO Atomic 変数やメモリ順序についての説明を余裕があったら書く。
 
 ---
 
@@ -268,6 +248,8 @@ socket.recv_from(&mut buf).await?;
 
 // do something
 ```
+
+TODO: いい感じの説明に変える
 
 このコードでは udp socket からデータを読み込むまで次の行が実行されることはありません。それではいつになったら処理を再開することが出来るのでしょうか？upd パケットを受信した時このプログラムの動作を再開させることが出来るはずです。しかし、「upd パケットを受信した」というのはどうやって管理するのでしょうか？方法の一つとしては、この非同期タスクが継続可能かどうかを逐一問い合わせる方法があります。しかし、この方法では無駄な問い合わせが発生してしまい処理効率が良くありません。
 
